@@ -56,3 +56,6 @@ crashlytics-build.properties
 # OS generated
 .DS_Store
 Thumbs.db
+
+# Experiment data (keep local only)
+ExperimentData/
