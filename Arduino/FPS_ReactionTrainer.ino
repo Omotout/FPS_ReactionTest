@@ -1,0 +1,117 @@
+// Arduino Code: Biphasic EMS with Interval Control & Safety Cool-down
+// Hardware: Arduino DUE + L298N (H-Bridge Mode)
+
+// 左手（撓屈）用ピン
+const int PIN_LEFT_A = 3; // IN1
+const int PIN_LEFT_B = 4; // IN2
+
+// 右手（尺屈）用ピン
+const int PIN_RIGHT_A = 5; // IN3
+const int PIN_RIGHT_B = 6; // IN4
+
+// デフォルトパラメータ
+int pulseWidth = 50;       // パルス幅 (us)  [20 - 1000]
+int pulseCount = 1;        // 繰り返し回数   [1 - 100]
+int pulseInterval = 40000; // 周期ごとの待機時間 (us) [0 - 100000]  Default: 40ms
+
+// 安全装置: 連打防止用クールダウン
+unsigned long lastTriggerTime = 0;          // 最後に発火した時刻 (ms)
+const unsigned int MIN_TRIGGER_INTERVAL = 500; // 最低インターバル (ms)。これより早い連打は無視。
+
+void setup() {
+  Serial.begin(9600);
+  Serial.setTimeout(50); // readStringUntil のタイムアウトを短縮 (デフォルト1000ms)
+  
+  // ピン設定
+  pinMode(PIN_LEFT_A, OUTPUT);
+  pinMode(PIN_LEFT_B, OUTPUT);
+  pinMode(PIN_RIGHT_A, OUTPUT);
+  pinMode(PIN_RIGHT_B, OUTPUT);
+  
+  stopEMS();
+}
+
+void loop() {
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+
+    // コマンド解析
+    unsigned long currentTime = millis();
+
+    // L/Rコマンドはクールダウン付き（安全装置）
+    if (command == "L") {
+      if (currentTime - lastTriggerTime > MIN_TRIGGER_INTERVAL) {
+        triggerBiphasicEMS(PIN_LEFT_A, PIN_LEFT_B);
+        lastTriggerTime = millis();
+      }
+    } 
+    else if (command == "R") {
+      if (currentTime - lastTriggerTime > MIN_TRIGGER_INTERVAL) {
+        triggerBiphasicEMS(PIN_RIGHT_A, PIN_RIGHT_B);
+        lastTriggerTime = millis();
+      }
+    }
+    else if (command.startsWith("W")) { // Width
+      pulseWidth = constrain(command.substring(1).toInt(), 20, 1000);
+    }
+    else if (command.startsWith("C")) { // Count
+      pulseCount = constrain(command.substring(1).toInt(), 1, 100);
+    }
+    else if (command.startsWith("I")) { // Interval
+      pulseInterval = constrain(command.substring(1).toInt(), 0, 100000);
+    }
+  }
+}
+
+void stopEMS() {
+  digitalWrite(PIN_LEFT_A, LOW);
+  digitalWrite(PIN_LEFT_B, LOW);
+  digitalWrite(PIN_RIGHT_A, LOW);
+  digitalWrite(PIN_RIGHT_B, LOW);
+}
+
+// delayMicroseconds() は約16383µs までしか正確に動作しないため、
+// 長い待機には delay() と delayMicroseconds() を併用する
+void safeDelayMicroseconds(unsigned long us) {
+  if (us >= 1000) {
+    delay(us / 1000);              // ミリ秒部分
+    delayMicroseconds(us % 1000);  // 残りのマイクロ秒部分
+  } else {
+    delayMicroseconds(us);
+  }
+}
+
+void triggerBiphasicEMS(int pinA, int pinB) {
+  for (int i = 0; i < pulseCount; i++) {
+    // --- 1周期 (4 * pulseWidth) ---
+    
+    // 1. 正相 (+)
+    digitalWrite(pinA, HIGH);
+    digitalWrite(pinB, LOW);
+    safeDelayMicroseconds(pulseWidth);
+
+    // 2. 休止 (0)
+    digitalWrite(pinA, LOW);
+    digitalWrite(pinB, LOW);
+    safeDelayMicroseconds(pulseWidth);
+
+    // 3. 逆相 (-)
+    digitalWrite(pinA, LOW);
+    digitalWrite(pinB, HIGH);
+    safeDelayMicroseconds(pulseWidth); 
+
+    // 4. 休止 (0)
+    digitalWrite(pinA, LOW);
+    digitalWrite(pinB, LOW);
+    safeDelayMicroseconds(pulseWidth);
+    
+    // --- インターバル (pulseInterval) ---
+    // 最後の1回以外は待機を入れる
+    if (i < pulseCount - 1) {
+      safeDelayMicroseconds(pulseInterval);
+    }
+  }
+  
+  stopEMS(); // 安全のため確実に停止
+}

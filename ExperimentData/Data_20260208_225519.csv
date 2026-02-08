@@ -1,0 +1,6 @@
+﻿Trial,Direction,ReactionTime(ms),StimulusOffset(s),Sensitivity,PulseWidth(us),PulseCount,PulseInterval(us),Timestamp
+1,L,228.50,0,200,200,2,40000,22:55:23.325
+2,L,232.87,0,200,200,2,40000,22:55:25.937
+3,R,315.95,0,200,200,2,40000,22:55:31.001
+4,L,314.23,0,200,200,2,40000,22:55:35.042
+5,R,233.75,0,200,200,2,40000,22:55:38.859
