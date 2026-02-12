@@ -1,17 +1,18 @@
 // Arduino Code: Biphasic EMS with Interval Control & Safety Cool-down
 // Hardware: Arduino DUE + L298N (H-Bridge Mode)
 
-// 左手（撓屈）用ピン
+// 撓屈用ピン
 const int PIN_LEFT_A = 3; // IN1
 const int PIN_LEFT_B = 4; // IN2
 
-// 右手（尺屈）用ピン
+// 尺屈用ピン
 const int PIN_RIGHT_A = 5; // IN3
 const int PIN_RIGHT_B = 6; // IN4
 
 // デフォルトパラメータ
 int pulseWidth = 50;       // パルス幅 (us)  [20 - 1000]
 int pulseCount = 1;        // 繰り返し回数   [1 - 100]
+int burstCount = 3;        // 1回の繰り返し内の2相性サイクル数 [1 - 20]  Default: 3
 int pulseInterval = 40000; // 周期ごとの待機時間 (us) [0 - 100000]  Default: 40ms
 
 // 安全装置: 連打防止用クールダウン
@@ -58,6 +59,9 @@ void loop() {
     else if (command.startsWith("C")) { // Count
       pulseCount = constrain(command.substring(1).toInt(), 1, 100);
     }
+    else if (command.startsWith("B")) { // Burst (cycles per repetition)
+      burstCount = constrain(command.substring(1).toInt(), 1, 20);
+    }
     else if (command.startsWith("I")) { // Interval
       pulseInterval = constrain(command.substring(1).toInt(), 0, 100000);
     }
@@ -84,27 +88,30 @@ void safeDelayMicroseconds(unsigned long us) {
 
 void triggerBiphasicEMS(int pinA, int pinB) {
   for (int i = 0; i < pulseCount; i++) {
-    // --- 1周期 (4 * pulseWidth) ---
-    
-    // 1. 正相 (+)
-    digitalWrite(pinA, HIGH);
-    digitalWrite(pinB, LOW);
-    safeDelayMicroseconds(pulseWidth);
+    // --- burstCount回の2相性サイクルを連続実行 ---
+    for (int j = 0; j < burstCount; j++) {
+      // --- 1周期 (4 * pulseWidth) ---
+      
+      // 1. 正相 (+)
+      digitalWrite(pinA, HIGH);
+      digitalWrite(pinB, LOW);
+      safeDelayMicroseconds(pulseWidth);
 
-    // 2. 休止 (0)
-    digitalWrite(pinA, LOW);
-    digitalWrite(pinB, LOW);
-    safeDelayMicroseconds(pulseWidth);
+      // 2. 休止 (0)
+      digitalWrite(pinA, LOW);
+      digitalWrite(pinB, LOW);
+      safeDelayMicroseconds(pulseWidth);
 
-    // 3. 逆相 (-)
-    digitalWrite(pinA, LOW);
-    digitalWrite(pinB, HIGH);
-    safeDelayMicroseconds(pulseWidth); 
+      // 3. 逆相 (-)
+      digitalWrite(pinA, LOW);
+      digitalWrite(pinB, HIGH);
+      safeDelayMicroseconds(pulseWidth); 
 
-    // 4. 休止 (0)
-    digitalWrite(pinA, LOW);
-    digitalWrite(pinB, LOW);
-    safeDelayMicroseconds(pulseWidth);
+      // 4. 休止 (0)
+      digitalWrite(pinA, LOW);
+      digitalWrite(pinB, LOW);
+      safeDelayMicroseconds(pulseWidth);
+    }
     
     // --- インターバル (pulseInterval) ---
     // 最後の1回以外は待機を入れる

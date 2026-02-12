@@ -16,11 +16,14 @@ public class ReactionTestManager : MonoBehaviour
     // --- インスペクタ設定項目 ---
 
     [Header("Hardware Settings")]
-    [Tooltip("Arduinoのポート名 (例: COM3, /dev/tty.usbmodem...)")]
-    public string portName = "COM3";
+    [Tooltip("Arduinoのポート名 (例: COM5, /dev/tty.usbmodem...)")]
+    public string portName = "COM5";
     public int baudRate = 9600;
 
     [Header("EMS Config (Biphasic / Single Pulse)")]
+    [Tooltip("EMS刺激を有効にする。OFFにすると視覚ターゲットのみで刺激は送信されません。")]
+    public bool emsEnabled = true;
+
     [Range(20, 1000)]
     [Tooltip("パルス幅 (µs)。単一パルスの場合は50µs前後が鋭い刺激になります。")]
     public int emsPulseWidth = 50; // ★デフォルト: 50µs
@@ -28,6 +31,10 @@ public class ReactionTestManager : MonoBehaviour
     [Range(1, 100)]
     [Tooltip("刺激の連射回数。単一パルスなら「1」。バースト波なら「5〜50」。")]
     public int emsPulseCount = 1;  // ★デフォルト: 1回 (単発)
+
+    [Range(1, 20)]
+    [Tooltip("1回の繰り返しに含まれる2相性サイクル数。デフォルト3。")]
+    public int emsBurstCount = 3;  // ★デフォルト: 3サイクル/繰り返し
 
     [Range(0, 100000)]
     [Tooltip("連射時のパルス間隔 (µs)。Count=1の場合は無視されます。")]
@@ -54,6 +61,12 @@ public class ReactionTestManager : MonoBehaviour
     public Image crosshairImage;
     public Color crosshairNormalColor = Color.white;
     public Color crosshairActiveColor = Color.red;
+
+    [Header("UI (Reaction Time)")]
+    [Tooltip("反応時間を画面上に表示する")]
+    public bool showReactionTimeUI = true;
+    [Tooltip("反応時間表示用のUI Text（任意）。未設定なら表示は行いません")]
+    public Text reactionTimeText;
 
     [Header("Experiment Settings")]
     [Tooltip("最大試行回数。これに達すると実験終了。")]
@@ -89,7 +102,11 @@ public class ReactionTestManager : MonoBehaviour
     // パラメータ変更検知用
     private int _lastSentWidth;
     private int _lastSentCount;
+    private int _lastSentBurst;
     private int _lastSentInterval;
+
+    // UI表示切り替え検知用
+    private bool _lastShowReactionTimeUI;
 
     void Start()
     {
@@ -108,6 +125,11 @@ public class ReactionTestManager : MonoBehaviour
         targetRight.SetActive(false);
         targetCenter.SetActive(false);
 
+        // 反応時間UI初期化
+        _lastShowReactionTimeUI = showReactionTimeUI;
+        ApplyReactionTimeUIVisibility();
+        ClearReactionTimeUI();
+
         // 実験開始（まずは中央を向くところから）
         StartCenterCheck();
     }
@@ -120,9 +142,17 @@ public class ReactionTestManager : MonoBehaviour
         // 2. 設定変更の監視（インスペクタで数値を変えたら即送信）
         if (_lastSentWidth != emsPulseWidth || 
             _lastSentCount != emsPulseCount || 
+            _lastSentBurst != emsBurstCount ||
             _lastSentInterval != emsPulseInterval)
         {
             SendEMSConfig();
+        }
+
+        // 2.5. UI表示設定の監視（インスペクタで切り替えたら即反映）
+        if (_lastShowReactionTimeUI != showReactionTimeUI)
+        {
+            _lastShowReactionTimeUI = showReactionTimeUI;
+            ApplyReactionTimeUIVisibility();
         }
 
         // 3. クロスヘアの色更新
@@ -145,9 +175,11 @@ public class ReactionTestManager : MonoBehaviour
     {
         _serialQueue.Enqueue($"W{emsPulseWidth}");
         _serialQueue.Enqueue($"C{emsPulseCount}");
+        _serialQueue.Enqueue($"B{emsBurstCount}");
         _serialQueue.Enqueue($"I{emsPulseInterval}");
         _lastSentWidth = emsPulseWidth;
         _lastSentCount = emsPulseCount;
+        _lastSentBurst = emsBurstCount;
         _lastSentInterval = emsPulseInterval;
     }
 
@@ -169,6 +201,7 @@ public class ReactionTestManager : MonoBehaviour
 
     void SendSignal(string dir)
     {
+        if (!emsEnabled) return;
         _serialQueue.Enqueue(dir);
     }
 
@@ -252,6 +285,8 @@ public class ReactionTestManager : MonoBehaviour
     {
         targetCenter.SetActive(false); // 中央を消す
         targetObj.SetActive(true);     // ターゲット表示
+
+        ClearReactionTimeUI();
         
         _reactionStopwatch.Restart();  // 高精度タイマー開始
         _currentState = State.Measuring;
@@ -272,6 +307,8 @@ public class ReactionTestManager : MonoBehaviour
             _reactionStopwatch.Stop();
             double reactionTime = _reactionStopwatch.Elapsed.TotalMilliseconds;
             UnityEngine.Debug.Log($"<color=cyan>反応時間 ({_currentTargetDirection}): {reactionTime:F2} ms</color>");
+
+            SetReactionTimeUI(reactionTime, _currentTargetDirection);
             
             // データを記録
             RecordData(reactionTime);
@@ -309,7 +346,7 @@ public class ReactionTestManager : MonoBehaviour
         _csvWriter.AutoFlush = true; // 各書き込み後に自動フラッシュ（データ損失防止）
 
         // ヘッダー書き込み (設定値も全て記録)
-        _csvWriter.WriteLine("Trial,Direction,ReactionTime(ms),StimulusOffset(s),Sensitivity,PulseWidth(us),PulseCount,PulseInterval(us),Timestamp");
+        _csvWriter.WriteLine("Trial,Direction,ReactionTime(ms),StimulusOffset(s),Sensitivity,PulseWidth(us),PulseCount,BurstCount,PulseInterval(us),Timestamp");
         
         UnityEngine.Debug.Log($"データ保存先: {_csvFilePath}");
     }
@@ -320,7 +357,7 @@ public class ReactionTestManager : MonoBehaviour
         string timeStamp = DateTime.Now.ToString("HH:mm:ss.fff");
         
         // CSVに1行追記
-        _csvWriter.WriteLine($"{_trialCount},{_currentTargetDirection},{reactionTime:F2},{stimulusTimingOffset},{mouseSensitivity},{emsPulseWidth},{emsPulseCount},{emsPulseInterval},{timeStamp}");
+        _csvWriter.WriteLine($"{_trialCount},{_currentTargetDirection},{reactionTime:F2},{stimulusTimingOffset},{mouseSensitivity},{emsPulseWidth},{emsPulseCount},{emsBurstCount},{emsPulseInterval},{timeStamp}");
     }
 
     // --- その他 (UI, Serial, 終了処理) ---
@@ -338,6 +375,31 @@ public class ReactionTestManager : MonoBehaviour
             }
         }
         crosshairImage.color = crosshairNormalColor;
+    }
+
+    void ApplyReactionTimeUIVisibility()
+    {
+        if (reactionTimeText == null) return;
+        reactionTimeText.gameObject.SetActive(showReactionTimeUI);
+
+        if (!showReactionTimeUI)
+        {
+            reactionTimeText.text = "";
+        }
+    }
+
+    void ClearReactionTimeUI()
+    {
+        if (!showReactionTimeUI) return;
+        if (reactionTimeText == null) return;
+        reactionTimeText.text = "";
+    }
+
+    void SetReactionTimeUI(double reactionTimeMs, string dir)
+    {
+        if (!showReactionTimeUI) return;
+        if (reactionTimeText == null) return;
+        reactionTimeText.text = $"RT ({dir}): {reactionTimeMs:F2} ms";
     }
 
     void EndExperiment()
