@@ -5,6 +5,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.IO;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 
@@ -47,8 +48,10 @@ public class ReactionTestManager : MonoBehaviour
     public bool testTriggerRight = false;
 
     [Header("Stimulation Timing")]
-    [Tooltip("ターゲット出現からの遅延時間(秒)。マイナス値で先行刺激(Agency-EMS用)。")]
-    public float stimulusTimingOffset = 0.0f; 
+    [Tooltip("左(撓屈)ターゲット出現からの遅延時間(秒)。マイナス値で先行刺激。")]
+    public float stimulusTimingOffsetLeft = 0.0f;
+    [Tooltip("右(尺屈)ターゲット出現からの遅延時間(秒)。マイナス値で先行刺激。")]
+    public float stimulusTimingOffsetRight = 0.0f;
 
     [Header("Game Objects")]
     public GameObject targetLeft;
@@ -69,6 +72,9 @@ public class ReactionTestManager : MonoBehaviour
     public Text reactionTimeText;
 
     [Header("Experiment Settings")]
+    [Tooltip("被験者ID。ファイル名とCSV内に記録されます。")]
+    public string subjectID = "sample";
+
     [Tooltip("最大試行回数。これに達すると実験終了。")]
     public int maxTrials = 30;
     
@@ -93,6 +99,10 @@ public class ReactionTestManager : MonoBehaviour
     private string _csvFilePath;
     private StreamWriter _csvWriter;
     private int _trialCount = 0;
+
+    // 左右別の反応時間記録（平均計算用）
+    private List<double> _reactionTimesLeft = new List<double>();
+    private List<double> _reactionTimesRight = new List<double>();
 
     // シリアル通信キュー (非同期送信)
     private ConcurrentQueue<string> _serialQueue = new ConcurrentQueue<string>();
@@ -255,12 +265,15 @@ public class ReactionTestManager : MonoBehaviour
         string dirStr = (direction == 0) ? "L" : "R";
         _currentTargetDirection = dirStr;
 
+        // 左右に応じた遅延時間を選択
+        float offset = (dirStr == "L") ? stimulusTimingOffsetLeft : stimulusTimingOffsetRight;
+
         // タイミング制御
-        if (stimulusTimingOffset < 0) 
+        if (offset < 0) 
         {
             // パターンA: 先行刺激 (Agency-EMSなど)
             SendSignal(dirStr);
-            yield return new WaitForSeconds(Mathf.Abs(stimulusTimingOffset));
+            yield return new WaitForSeconds(Mathf.Abs(offset));
             ShowVisualTarget(targetObj);
         }
         else 
@@ -268,9 +281,9 @@ public class ReactionTestManager : MonoBehaviour
             // パターンB: 同時または遅延刺激
             ShowVisualTarget(targetObj);
             
-            if (stimulusTimingOffset > 0)
+            if (offset > 0)
             {
-                yield return new WaitForSeconds(stimulusTimingOffset);
+                yield return new WaitForSeconds(offset);
                 SendSignal(dirStr);
             }
             else
@@ -338,15 +351,34 @@ public class ReactionTestManager : MonoBehaviour
             Directory.CreateDirectory(directoryPath);
         }
         
-        string fileName = $"Data_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+        string emsTag = emsEnabled ? "EMS_ON" : "EMS_OFF";
+        string fileName = $"Data_{subjectID}_{emsTag}_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
         _csvFilePath = Path.Combine(directoryPath, fileName);
 
         // StreamWriterを保持して効率的に書き込み
         _csvWriter = new StreamWriter(_csvFilePath, false, System.Text.Encoding.UTF8);
         _csvWriter.AutoFlush = true; // 各書き込み後に自動フラッシュ（データ損失防止）
 
-        // ヘッダー書き込み (設定値も全て記録)
-        _csvWriter.WriteLine("Trial,Direction,ReactionTime(ms),StimulusOffset(s),Sensitivity,PulseWidth(us),PulseCount,BurstCount,PulseInterval(us),Timestamp");
+        // 固定パラメータをヘッダブロックとして記録
+        _csvWriter.WriteLine("--- Settings ---");
+        _csvWriter.WriteLine($"Subject ID,{subjectID}");
+        _csvWriter.WriteLine($"Date,{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        _csvWriter.WriteLine($"EMS Enabled,{emsEnabled}");
+        _csvWriter.WriteLine($"Sensitivity,{mouseSensitivity}");
+        _csvWriter.WriteLine($"AngleThreshold(deg),{angleThreshold}");
+        _csvWriter.WriteLine($"CenterThreshold(deg),{centerThreshold}");
+        _csvWriter.WriteLine($"WaitTime(s),{minWaitTime}-{maxWaitTime}");
+        _csvWriter.WriteLine($"PulseWidth(us),{emsPulseWidth}");
+        _csvWriter.WriteLine($"PulseCount,{emsPulseCount}");
+        _csvWriter.WriteLine($"BurstCount,{emsBurstCount}");
+        _csvWriter.WriteLine($"PulseInterval(us),{emsPulseInterval}");
+        _csvWriter.WriteLine($"StimulusOffsetL(s),{stimulusTimingOffsetLeft}");
+        _csvWriter.WriteLine($"StimulusOffsetR(s),{stimulusTimingOffsetRight}");
+        _csvWriter.WriteLine($"MaxTrials,{maxTrials}");
+        _csvWriter.WriteLine();
+
+        // 試行データのヘッダー（変動値のみ）
+        _csvWriter.WriteLine("Trial,Direction,ReactionTime(ms),Timestamp");
         
         UnityEngine.Debug.Log($"データ保存先: {_csvFilePath}");
     }
@@ -355,9 +387,59 @@ public class ReactionTestManager : MonoBehaviour
     {
         _trialCount++;
         string timeStamp = DateTime.Now.ToString("HH:mm:ss.fff");
+
+        // 左右別にリストに記録
+        if (_currentTargetDirection == "L")
+            _reactionTimesLeft.Add(reactionTime);
+        else
+            _reactionTimesRight.Add(reactionTime);
         
-        // CSVに1行追記
-        _csvWriter.WriteLine($"{_trialCount},{_currentTargetDirection},{reactionTime:F2},{stimulusTimingOffset},{mouseSensitivity},{emsPulseWidth},{emsPulseCount},{emsBurstCount},{emsPulseInterval},{timeStamp}");
+        // CSVに1行追記（変動値のみ）
+        _csvWriter.WriteLine($"{_trialCount},{_currentTargetDirection},{reactionTime:F2},{timeStamp}");
+    }
+
+    void WriteSummaryToCSV()
+    {
+        _csvWriter.WriteLine();
+        _csvWriter.WriteLine("--- Summary ---");
+
+        if (_reactionTimesLeft.Count > 0)
+        {
+            double avgL = 0;
+            foreach (double t in _reactionTimesLeft) avgL += t;
+            avgL /= _reactionTimesLeft.Count;
+            _csvWriter.WriteLine($"Left(L) Avg,{avgL:F2} ms,n={_reactionTimesLeft.Count}");
+        }
+        else
+        {
+            _csvWriter.WriteLine("Left(L) Avg,N/A,n=0");
+        }
+
+        if (_reactionTimesRight.Count > 0)
+        {
+            double avgR = 0;
+            foreach (double t in _reactionTimesRight) avgR += t;
+            avgR /= _reactionTimesRight.Count;
+            _csvWriter.WriteLine($"Right(R) Avg,{avgR:F2} ms,n={_reactionTimesRight.Count}");
+        }
+        else
+        {
+            _csvWriter.WriteLine("Right(R) Avg,N/A,n=0");
+        }
+
+        int totalCount = _reactionTimesLeft.Count + _reactionTimesRight.Count;
+        if (totalCount > 0)
+        {
+            double totalSum = 0;
+            foreach (double t in _reactionTimesLeft) totalSum += t;
+            foreach (double t in _reactionTimesRight) totalSum += t;
+            double avgAll = totalSum / totalCount;
+            _csvWriter.WriteLine($"Overall Avg,{avgAll:F2} ms,n={totalCount}");
+        }
+        else
+        {
+            _csvWriter.WriteLine("Overall Avg,N/A,n=0");
+        }
     }
 
     // --- その他 (UI, Serial, 終了処理) ---
@@ -405,6 +487,7 @@ public class ReactionTestManager : MonoBehaviour
     void EndExperiment()
     {
         UnityEngine.Debug.Log("規定回数に達しました。実験を終了します。");
+        WriteSummaryToCSV();
         CleanupResources();
 
         #if UNITY_EDITOR
