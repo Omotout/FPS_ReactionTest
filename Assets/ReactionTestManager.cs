@@ -75,8 +75,11 @@ public class ReactionTestManager : MonoBehaviour
     [Tooltip("被験者ID。ファイル名とCSV内に記録されます。")]
     public string subjectID = "sample";
 
-    [Tooltip("最大試行回数。これに達すると実験終了。")]
+    [Tooltip("最大試行回数。これに達すると実験終了。左右均等モード時は偶数にしてください。")]
     public int maxTrials = 30;
+
+    [Tooltip("有効にすると左右が同じ回数ずつランダムな順序で出現します。")]
+    public bool balanceLeftRight = true;
     
     [Tooltip("マウス感度。HorizontalLookスクリプトに反映されます。")]
     public float mouseSensitivity = 200.0f;
@@ -118,6 +121,10 @@ public class ReactionTestManager : MonoBehaviour
     // UI表示切り替え検知用
     private bool _lastShowReactionTimeUI;
 
+    // 左右均等モード用のシャッフル済みリスト
+    private List<int> _trialOrder;  // 0=L, 1=R
+    private int _trialIndex = 0;
+
     void Start()
     {
         // フレームレート制限を解除して高精度な反応時間計測を実現
@@ -127,6 +134,7 @@ public class ReactionTestManager : MonoBehaviour
         ApplySensitivity(); // 感度設定の適用
         SetupSerial();      // Arduino接続
         SetupCSV();         // ログファイル作成
+        GenerateTrialOrder(); // 試行順序生成
         
         SendEMSConfig();    // 初期のEMS設定を送信
 
@@ -216,6 +224,39 @@ public class ReactionTestManager : MonoBehaviour
     }
 
     // --- 実験フロー制御 ---
+
+    /// <summary>
+    /// 左右均等モード時、L(0)とR(1)を半数ずつ含むリストをシャッフルして生成する。
+    /// maxTrialsが奇数の場合は切り上げて1回多い方をランダムに決める。
+    /// </summary>
+    void GenerateTrialOrder()
+    {
+        _trialOrder = new List<int>();
+        _trialIndex = 0;
+
+        if (!balanceLeftRight) return;
+
+        int halfL = maxTrials / 2;
+        int halfR = maxTrials / 2;
+        if (maxTrials % 2 != 0)
+        {
+            // 奇数の場合、どちらに1回多く割り当てるかランダム
+            if (UnityEngine.Random.Range(0, 2) == 0) halfL++; else halfR++;
+        }
+
+        for (int i = 0; i < halfL; i++) _trialOrder.Add(0); // L
+        for (int i = 0; i < halfR; i++) _trialOrder.Add(1); // R
+
+        // Fisher-Yates シャッフル
+        for (int i = _trialOrder.Count - 1; i > 0; i--)
+        {
+            int j = UnityEngine.Random.Range(0, i + 1);
+            int tmp = _trialOrder[i];
+            _trialOrder[i] = _trialOrder[j];
+            _trialOrder[j] = tmp;
+        }
+    }
+
     void ApplySensitivity()
     {
         var lookScript = playerCamera.GetComponent<HorizontalLook>();
@@ -259,8 +300,17 @@ public class ReactionTestManager : MonoBehaviour
 
     IEnumerator ExecuteTrialSequence()
     {
-        // 左右ランダム決定
-        int direction = UnityEngine.Random.Range(0, 2);
+        // 方向決定
+        int direction;
+        if (balanceLeftRight && _trialIndex < _trialOrder.Count)
+        {
+            direction = _trialOrder[_trialIndex];
+            _trialIndex++;
+        }
+        else
+        {
+            direction = UnityEngine.Random.Range(0, 2);
+        }
         GameObject targetObj = (direction == 0) ? targetLeft : targetRight;
         string dirStr = (direction == 0) ? "L" : "R";
         _currentTargetDirection = dirStr;
